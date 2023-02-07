@@ -1,4 +1,6 @@
 import asyncio
+import redis
+import pickle
 
 from telegram.constants import ChatAction
 
@@ -7,6 +9,7 @@ from telegram import Update, Message, constants
 from telegram.error import RetryAfter, BadRequest
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, ChatMemberHandler, filters
 
+r = redis.Redis(host='redis', port=6379, db=0)
 
 class TelegramBot:
     def __init__(self, token: dict, ai: ChatGPT, allowed: [int]):
@@ -32,7 +35,6 @@ class TelegramBot:
         """
         Handles the /start
         """
-        print("ok")
         if not self.is_allowed(update.message.from_user.id):
             return
 
@@ -42,31 +44,61 @@ class TelegramBot:
         """
         Handles the /start
         """
-        print("ok")
+        message_text = ''
+
         if not self.is_allowed(update.message.from_user.id):
             return
 
-        if update.message.reply_to_message:
-            if update.message.reply_to_message['from'].username=='neiropiki_bot':
-                    await context.bot.send_message(chat_id=update.effective_chat.id, reply_to_message_id=update.message.message_id, text=u'Нахуй иди')
         if update.message.entities:
             if update.message.entities[0]:
                 if update.message.entities[0].type=="mention":
+                    if update.message.text.split(' ',1)[0]=='@neiropiki_bot':
 #                    await context.bot.send_message(chat_id=update.effective_chat.id, reply_to_message_id=update.message.message_id, text=message_text)
-                    message_text = update.message.text.split(' ', 1)[1]
-                    send = await context.bot.send_message(chat_id=update.effective_chat.id, text="Got request")
-                    text = self.ai.create_text(message_text)
-                    await context.bot.editMessageText(chat_id=update.effective_chat.id,
-                                              message_id=send.message_id,
-                                              text=f"Request done in {text.time_cons} sec")
+                        message_text = update.message.text.split(' ', 1)[1]
 
-                    await context.bot.send_message(
-                        chat_id=update.effective_chat.id,
-                        reply_to_message_id=update.message.message_id,
-                        text=text.text
-                    )
+        if update.message.reply_to_message:
+            if update.message.reply_to_message['from'].username=='neiropiki_bot':
+                    pmsg = r.get(update.message.reply_to_message.message_id)
+                    if pmsg:
+                        msg = pickle.loads(pmsg)
+                        pmsg = r.get(msg.reply_to_message.message_id)
+                        msg = pickle.loads(pmsg)
+                        message_text = msg.text + '\n' + update.message.text
+                        if message_text.split(' ',1)[0]=='@neiropiki_bot':
+                            message_text = message_text.split(' ', 1)[1]
+                        await context.bot.send_message(chat_id=update.effective_chat.id, reply_to_message_id=update.message.message_id, text=message_text)
+                    else:
+                        await context.bot.send_message(chat_id=update.effective_chat.id, reply_to_message_id=update.message.message_id, text=update.message.reply_to_message.message_id)
 
-                    typing_task.cancel()
+        if message_text== '':
+            return
+
+        typing_task = context.application.create_task(
+            self.send_typing(update, context, every_seconds=4)
+        )
+
+        r.set(update.message.message_id,pickle.dumps(update.message))
+        send = await context.bot.send_message(chat_id=update.effective_chat.id, text="Got request")
+        
+        try:
+            text = self.ai.create_text(message_text)
+        except:
+            text = u"Ответ от нейросети не получен"
+
+        if text:
+            await context.bot.editMessageText(chat_id=update.effective_chat.id,
+                                message_id=send.message_id,
+                                text=f"Request done in {text.time_cons} sec")
+
+        send = await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.message_id,
+            text=text.text
+        )
+
+        r.set(send.message_id,pickle.dumps(send))
+
+        typing_task.cancel()
 
 
 
@@ -74,8 +106,6 @@ class TelegramBot:
         """
         Sends the typing action
         """
-        print("ok")
-
         if not self.is_allowed(update.message.from_user.id):
             return
 
@@ -87,7 +117,6 @@ class TelegramBot:
         """
         Generates text
         """
-        print("ok")
         if not self.is_allowed(update.message.from_user.id):
             return
 
@@ -101,7 +130,10 @@ class TelegramBot:
         else:
             send = await context.bot.send_message(chat_id=update.effective_chat.id, text="Got request")
 
-            text = self.ai.create_text(message_text)
+            try:
+                text = self.ai.create_text(message_text)
+            except:
+                text = u"Ответ от нейросети не получен"
 
             await context.bot.editMessageText(chat_id=update.effective_chat.id,
                                               message_id=send.message_id,
